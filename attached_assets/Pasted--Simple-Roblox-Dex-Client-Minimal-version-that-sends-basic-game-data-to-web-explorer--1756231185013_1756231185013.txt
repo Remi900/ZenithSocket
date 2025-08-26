@@ -1,0 +1,84 @@
+--[[
+    Simple Roblox Dex Client
+    Minimal version that sends basic game data to web explorer
+]]
+
+local SERVER_URL = 'wss://dcd3fbd9-6434-4a41-817a-627e6e5a5c02-00-3h9ossvnk1txu.janeway.replit.dev/ws
+'
+
+local ws = WebSocket.new(SERVER_URL)
+local isConnected = false
+
+ws.OnMessage:Connect(function(message)
+    print('Server:', message)
+end)
+
+ws.OnClose:Connect(function()
+    print('Disconnected from web explorer')
+    isConnected = false
+end)
+
+-- Wait for connection
+wait(1)
+isConnected = true
+print('Connected to web explorer!')
+
+-- Send sample game data
+local function sendGameData()
+    local instances = {}
+
+    -- Add workspace and some basic objects
+    table.insert(instances, {
+        id = 'game',
+        name = 'Game',
+        className = 'DataModel',
+        path = 'game',
+        parent = nil,
+        properties = { Name = 'Game', ClassName = 'DataModel' },
+        children = {},
+    })
+
+    for _, obj in pairs(workspace:GetChildren()) do
+        table.insert(instances, {
+            id = obj.Name,
+            name = obj.Name,
+            className = obj.ClassName,
+            path = 'game.Workspace.' .. obj.Name,
+            parent = 'game.Workspace',
+            properties = {
+                Name = obj.Name,
+                ClassName = obj.ClassName,
+                Position = obj:IsA('BasePart') and {
+                    X = obj.Position.X,
+                    Y = obj.Position.Y,
+                    Z = obj.Position.Z,
+                } or nil,
+            },
+            children = {},
+        })
+    end
+
+    local message = {
+        type = 'gameTree',
+        data = { instances = instances },
+    }
+
+    ws:Send(game:GetService('HttpService'):JSONEncode(message))
+    print('Sent', #instances, 'instances to web explorer')
+end
+
+-- Send initial data
+sendGameData()
+
+-- Send ping every 10 seconds
+spawn(function()
+    while isConnected do
+        wait(10)
+        ws:Send(game:GetService('HttpService'):JSONEncode({
+            type = 'ping',
+            data = { timestamp = tick() },
+        }))
+    end
+end)
+
+print('Simple Dex client running!')

@@ -1,0 +1,400 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Dex WebSocket Explorer</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=Roboto+Mono:wght@400;500&display=swap" rel="stylesheet">
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css" rel="stylesheet">
+    <script>
+    tailwind.config = {
+        theme: {
+            extend: {
+                colors: {
+                    'dark-bg': '#1E1E1E',
+                    'dark-panel': '#2D2D30',
+                    'dark-border': '#3E3E42',
+                    'dark-text': '#CCCCCC',
+                    'dark-text-muted': '#969696',
+                    'dark-accent': '#007ACC',
+                    'dark-hover': '#383838'
+                },
+                fontFamily: {
+                    'mono': ['Roboto Mono', 'monospace'],
+                    'sans': ['Inter', 'sans-serif']
+                }
+            }
+        }
+    };
+    </script>
+    <style>
+        /* Custom scrollbar */
+        .custom-scrollbar::-webkit-scrollbar {
+            width: 12px;
+        }
+        .custom-scrollbar::-webkit-scrollbar-track {
+            background: #2D2D30;
+        }
+        .custom-scrollbar::-webkit-scrollbar-thumb {
+            background: #3E3E42;
+            border-radius: 6px;
+        }
+        .custom-scrollbar::-webkit-scrollbar-thumb:hover {
+            background: #4E4E52;
+        }
+
+        /* Tree node animations */
+        .tree-node {
+            transition: all 0.15s ease;
+        }
+        .tree-node:hover {
+            background-color: #383838;
+        }
+        .tree-expand {
+            transition: transform 0.15s ease;
+        }
+        .tree-expand.expanded {
+            transform: rotate(90deg);
+        }
+
+        /* Resizer */
+        .resizer {
+            cursor: col-resize;
+            background: linear-gradient(90deg, transparent 5px, #3E3E42 5px, #3E3E42 7px, transparent 7px);
+        }
+        .resizer:hover {
+            background: linear-gradient(90deg, transparent 5px, #007ACC 5px, #007ACC 7px, transparent 7px);
+        }
+    </style>
+</head>
+<body class="bg-dark-bg text-dark-text font-sans overflow-hidden">
+    <!-- @COMPONENT: MainLayout [full screen container] -->
+    <div class="h-screen flex flex-col">
+        
+        <!-- @COMPONENT: StatusBar [WebSocket connection status] -->
+        <div class="bg-dark-panel border-b border-dark-border px-4 py-2 flex items-center justify-between h-8">
+            <div class="flex items-center space-x-3">
+                <!-- @STATE: isConnected:boolean = false -->
+                <div class="flex items-center space-x-2">
+                    <div class="w-2 h-2 rounded-full bg-red-500" data-bind="connectionStatus.color" data-mock="true"></div>
+                    <span class="text-xs font-medium" data-bind="connectionStatus.text" data-mock="true">Disconnected</span>
+                </div>
+                <div class="text-xs text-dark-text-muted font-mono" data-bind="websocketUrl" data-mock="true">
+                    ws://localhost:8080
+                </div>
+            </div>
+            <div class="flex items-center space-x-2 text-xs text-dark-text-muted">
+                <span data-bind="clientCount" data-mock="true">0 clients</span>
+                <span>•</span>
+                <span data-bind="messageCount" data-mock="true">0 messages</span>
+            </div>
+        </div>
+
+        <!-- @COMPONENT: MainContent [split panel layout] -->
+        <div class="flex-1 flex min-h-0">
+            
+            <!-- @COMPONENT: ExplorerPanel [left panel with tree] -->
+            <div class="w-80 bg-dark-bg border-r border-dark-border flex flex-col">
+                
+                <!-- @COMPONENT: ExplorerToolbar [search and controls] -->
+                <div class="bg-dark-panel border-b border-dark-border p-3">
+                    <div class="flex items-center space-x-2 mb-3">
+                        <h3 class="font-medium text-sm">Explorer</h3>
+                        <div class="flex-1"></div>
+                        <button class="text-dark-text-muted hover:text-dark-text p-1" title="Refresh">
+                            <i class="fas fa-sync-alt text-xs"></i>
+                        </button>
+                        <button class="text-dark-text-muted hover:text-dark-text p-1" title="Expand All">
+                            <i class="fas fa-expand-arrows-alt text-xs"></i>
+                        </button>
+                        <button class="text-dark-text-muted hover:text-dark-text p-1" title="Collapse All">
+                            <i class="fas fa-compress-arrows-alt text-xs"></i>
+                        </button>
+                    </div>
+                    
+                    <!-- @COMPONENT: SearchInput [live search functionality] -->
+                    <div class="relative">
+                        <input 
+                            type="text" 
+                            placeholder="Search objects..." 
+                            class="w-full bg-dark-bg border border-dark-border rounded px-3 py-1.5 text-xs focus:outline-none focus:border-dark-accent"
+                            data-implementation="Should filter tree nodes in real-time"
+                        >
+                        <i class="fas fa-search absolute right-3 top-2 text-dark-text-muted text-xs"></i>
+                    </div>
+                </div>
+
+                <!-- @COMPONENT: TreeView [game object hierarchy] -->
+                <div class="flex-1 overflow-hidden">
+                    <div class="h-full overflow-y-auto custom-scrollbar">
+                        <!-- @MAP: treeNodes.map(node => ( -->
+                        
+                        <!-- Game Root Node -->
+                        <div class="tree-node flex items-center py-1 px-2 cursor-pointer" data-mock="true">
+                            <i class="fas fa-caret-right text-dark-text-muted text-xs tree-expand expanded mr-1"></i>
+                            <i class="fas fa-gamepad text-blue-400 text-xs mr-2"></i>
+                            <span class="font-mono text-xs" data-bind="node.name">Game</span>
+                        </div>
+
+                        <!-- Workspace Node -->
+                        <div class="tree-node flex items-center py-1 px-2 cursor-pointer ml-4" data-mock="true">
+                            <i class="fas fa-caret-right text-dark-text-muted text-xs tree-expand expanded mr-1"></i>
+                            <i class="fas fa-cube text-green-400 text-xs mr-2"></i>
+                            <span class="font-mono text-xs" data-bind="node.name">Workspace</span>
+                        </div>
+
+                        <!-- Part Nodes -->
+                        <div class="tree-node flex items-center py-1 px-2 cursor-pointer ml-8 bg-dark-hover" data-mock="true">
+                            <div class="w-3 mr-1"></div>
+                            <i class="fas fa-cube text-gray-400 text-xs mr-2"></i>
+                            <span class="font-mono text-xs" data-bind="node.name">Baseplate</span>
+                        </div>
+
+                        <div class="tree-node flex items-center py-1 px-2 cursor-pointer ml-8" data-mock="true">
+                            <i class="fas fa-caret-right text-dark-text-muted text-xs tree-expand mr-1"></i>
+                            <i class="fas fa-cube text-purple-400 text-xs mr-2"></i>
+                            <span class="font-mono text-xs" data-bind="node.name">SpawnLocation</span>
+                        </div>
+
+                        <!-- Players Node -->
+                        <div class="tree-node flex items-center py-1 px-2 cursor-pointer ml-4" data-mock="true">
+                            <i class="fas fa-caret-right text-dark-text-muted text-xs tree-expand expanded mr-1"></i>
+                            <i class="fas fa-users text-yellow-400 text-xs mr-2"></i>
+                            <span class="font-mono text-xs" data-bind="node.name">Players</span>
+                        </div>
+
+                        <!-- Player Instance -->
+                        <div class="tree-node flex items-center py-1 px-2 cursor-pointer ml-8" data-mock="true">
+                            <i class="fas fa-caret-right text-dark-text-muted text-xs tree-expand mr-1"></i>
+                            <i class="fas fa-user text-blue-300 text-xs mr-2"></i>
+                            <span class="font-mono text-xs" data-bind="node.name">Player1</span>
+                        </div>
+
+                        <!-- Lighting Node -->
+                        <div class="tree-node flex items-center py-1 px-2 cursor-pointer ml-4" data-mock="true">
+                            <div class="w-3 mr-1"></div>
+                            <i class="fas fa-lightbulb text-yellow-300 text-xs mr-2"></i>
+                            <span class="font-mono text-xs" data-bind="node.name">Lighting</span>
+                        </div>
+
+                        <!-- ReplicatedStorage Node -->
+                        <div class="tree-node flex items-center py-1 px-2 cursor-pointer ml-4" data-mock="true">
+                            <i class="fas fa-caret-right text-dark-text-muted text-xs tree-expand mr-1"></i>
+                            <i class="fas fa-database text-orange-400 text-xs mr-2"></i>
+                            <span class="font-mono text-xs" data-bind="node.name">ReplicatedStorage</span>
+                        </div>
+
+                        <!-- StarterGui Node -->
+                        <div class="tree-node flex items-center py-1 px-2 cursor-pointer ml-4" data-mock="true">
+                            <div class="w-3 mr-1"></div>
+                            <i class="fas fa-desktop text-cyan-400 text-xs mr-2"></i>
+                            <span class="font-mono text-xs" data-bind="node.name">StarterGui</span>
+                        </div>
+
+                        <!-- @END_MAP )) -->
+                    </div>
+                </div>
+            </div>
+
+            <!-- @COMPONENT: PanelResizer [drag to resize panels] -->
+            <div class="w-1 resizer hover:w-2 transition-all duration-150"></div>
+
+            <!-- @COMPONENT: PropertiesPanel [right panel showing object details] -->
+            <div class="flex-1 bg-dark-bg flex flex-col min-w-0">
+                
+                <!-- @COMPONENT: PropertiesHeader [selected object info] -->
+                <div class="bg-dark-panel border-b border-dark-border p-3">
+                    <div class="flex items-center space-x-2 mb-2">
+                        <i class="fas fa-cube text-gray-400 text-sm" data-bind="selectedObject.icon" data-mock="true"></i>
+                        <h3 class="font-medium text-sm" data-bind="selectedObject.name" data-mock="true">Baseplate</h3>
+                        <span class="text-xs text-dark-text-muted" data-bind="selectedObject.className" data-mock="true">(Part)</span>
+                    </div>
+                    <div class="text-xs text-dark-text-muted font-mono" data-bind="selectedObject.path" data-mock="true">
+                        game.Workspace.Baseplate
+                    </div>
+                </div>
+
+                <!-- @COMPONENT: PropertiesContent [scrollable properties list] -->
+                <div class="flex-1 overflow-hidden">
+                    <div class="h-full overflow-y-auto custom-scrollbar">
+                        <div class="p-3 space-y-3" data-mock="true">
+                            
+                            <!-- @MAP: properties.map(property => ( -->
+                            
+                            <!-- Anchored Property -->
+                            <div class="flex items-center justify-between py-1">
+                                <span class="font-mono text-xs text-dark-text-muted" data-bind="property.name">Anchored</span>
+                                <span class="font-mono text-xs text-blue-300" data-bind="property.value">true</span>
+                            </div>
+
+                            <!-- BrickColor Property -->
+                            <div class="flex items-center justify-between py-1">
+                                <span class="font-mono text-xs text-dark-text-muted" data-bind="property.name">BrickColor</span>
+                                <div class="flex items-center space-x-2">
+                                    <div class="w-3 h-3 bg-gray-500 rounded-sm border border-dark-border" data-bind="property.colorValue" data-mock="true"></div>
+                                    <span class="font-mono text-xs" data-bind="property.value">Medium stone grey</span>
+                                </div>
+                            </div>
+
+                            <!-- CanCollide Property -->
+                            <div class="flex items-center justify-between py-1">
+                                <span class="font-mono text-xs text-dark-text-muted" data-bind="property.name">CanCollide</span>
+                                <span class="font-mono text-xs text-blue-300" data-bind="property.value">true</span>
+                            </div>
+
+                            <!-- Material Property -->
+                            <div class="flex items-center justify-between py-1">
+                                <span class="font-mono text-xs text-dark-text-muted" data-bind="property.name">Material</span>
+                                <span class="font-mono text-xs text-purple-300" data-bind="property.value">Plastic</span>
+                            </div>
+
+                            <!-- Name Property -->
+                            <div class="flex items-center justify-between py-1">
+                                <span class="font-mono text-xs text-dark-text-muted" data-bind="property.name">Name</span>
+                                <span class="font-mono text-xs text-green-300" data-bind="property.value">"Baseplate"</span>
+                            </div>
+
+                            <!-- Position Property -->
+                            <div class="flex items-center justify-between py-1">
+                                <span class="font-mono text-xs text-dark-text-muted" data-bind="property.name">Position</span>
+                                <span class="font-mono text-xs text-orange-300" data-bind="property.value">0, -10, 0</span>
+                            </div>
+
+                            <!-- Size Property -->
+                            <div class="flex items-center justify-between py-1">
+                                <span class="font-mono text-xs text-dark-text-muted" data-bind="property.name">Size</span>
+                                <span class="font-mono text-xs text-orange-300" data-bind="property.value">512, 20, 512</span>
+                            </div>
+
+                            <!-- Transparency Property -->
+                            <div class="flex items-center justify-between py-1">
+                                <span class="font-mono text-xs text-dark-text-muted" data-bind="property.name">Transparency</span>
+                                <span class="font-mono text-xs text-cyan-300" data-bind="property.value">0</span>
+                            </div>
+
+                            <!-- Parent Property -->
+                            <div class="flex items-center justify-between py-1">
+                                <span class="font-mono text-xs text-dark-text-muted" data-bind="property.name">Parent</span>
+                                <span class="font-mono text-xs text-yellow-300" data-bind="property.value">Workspace</span>
+                            </div>
+
+                            <!-- ClassName Property -->
+                            <div class="flex items-center justify-between py-1">
+                                <span class="font-mono text-xs text-dark-text-muted" data-bind="property.name">ClassName</span>
+                                <span class="font-mono text-xs text-pink-300" data-bind="property.value">"Part"</span>
+                            </div>
+
+                            <!-- @END_MAP )) -->
+                            
+                        </div>
+                    </div>
+                </div>
+
+                <!-- @COMPONENT: PropertiesFooter [stats and actions] -->
+                <div class="bg-dark-panel border-t border-dark-border p-2 flex items-center justify-between text-xs text-dark-text-muted">
+                    <span data-bind="propertyCount" data-mock="true">10 properties</span>
+                    <div class="flex items-center space-x-2">
+                        <button class="hover:text-dark-text" title="Copy Path">
+                            <i class="fas fa-copy"></i>
+                        </button>
+                        <button class="hover:text-dark-text" title="View Source">
+                            <i class="fas fa-code"></i>
+                        </button>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+    <!-- @END_COMPONENT: MainLayout -->
+
+    <script>
+        (() => {
+            // TODO: Implement WebSocket connection and real-time updates
+            // TODO: Implement tree node expansion/collapse
+            // TODO: Implement property panel updates based on selection
+            // TODO: Implement search functionality
+            // TODO: Implement panel resizing
+            
+            // Mock connection status animation
+            const statusDot = document.querySelector('.w-2.h-2.rounded-full');
+            const statusText = statusDot?.nextElementSibling;
+            
+            // Simulate connection status changes
+            setTimeout(() => {
+                if (statusDot && statusText) {
+                    statusDot.className = 'w-2 h-2 rounded-full bg-green-500 animate-pulse';
+                    statusText.textContent = 'Connected';
+                    
+                    // Update client count
+                    const clientCount = document.querySelector('[data-bind="clientCount"]');
+                    if (clientCount) clientCount.textContent = '1 client';
+                }
+            }, 2000);
+
+            // Tree node expansion functionality
+            document.addEventListener('click', (e) => {
+                const expandIcon = e.target.closest('.tree-expand');
+                if (expandIcon) {
+                    expandIcon.classList.toggle('expanded');
+                    // TODO: Show/hide child nodes based on expansion state
+                }
+            });
+
+            // Tree node selection
+            document.addEventListener('click', (e) => {
+                const treeNode = e.target.closest('.tree-node');
+                if (treeNode) {
+                    // Remove previous selection
+                    document.querySelectorAll('.tree-node').forEach(node => {
+                        node.classList.remove('bg-dark-hover');
+                    });
+                    
+                    // Add selection to clicked node
+                    treeNode.classList.add('bg-dark-hover');
+                    
+                    // TODO: Update properties panel with selected object data
+                }
+            });
+
+            // Search functionality
+            const searchInput = document.querySelector('input[placeholder="Search objects..."]');
+            if (searchInput) {
+                searchInput.addEventListener('input', (e) => {
+                    const searchTerm = e.target.value.toLowerCase();
+                    // TODO: Filter tree nodes based on search term
+                    console.log('Searching for:', searchTerm);
+                });
+            }
+
+            // Panel resizing
+            const resizer = document.querySelector('.resizer');
+            const explorerPanel = document.querySelector('.w-80');
+            
+            if (resizer && explorerPanel) {
+                let isResizing = false;
+                
+                resizer.addEventListener('mousedown', (e) => {
+                    isResizing = true;
+                    document.body.style.cursor = 'col-resize';
+                    e.preventDefault();
+                });
+                
+                document.addEventListener('mousemove', (e) => {
+                    if (!isResizing) return;
+                    
+                    const newWidth = e.clientX;
+                    if (newWidth >= 200 && newWidth <= 600) {
+                        explorerPanel.style.width = `${newWidth}px`;
+                    }
+                });
+                
+                document.addEventListener('mouseup', () => {
+                    isResizing = false;
+                    document.body.style.cursor = 'default';
+                });
+            }
+        })();
+    </script>
+</body>
+</html>

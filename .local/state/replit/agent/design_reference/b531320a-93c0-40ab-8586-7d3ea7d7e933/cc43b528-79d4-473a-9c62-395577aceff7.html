@@ -1,0 +1,648 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Zenith WebSocket Explorer</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script>
+    tailwind.config = {
+        theme: {
+            extend: {
+                colors: {
+                    'dark-primary': '#1e1e1e',
+                    'dark-secondary': '#252526',
+                    'dark-surface': '#2d2d30',
+                    'dark-border': '#3e3e42',
+                    'dark-accent': '#007acc',
+                    'dark-success': '#4ec9b0',
+                    'dark-warning': '#dcdcaa',
+                    'dark-error': '#f44747',
+                    'dark-text': '#cccccc',
+                    'dark-text-secondary': '#969696'
+                },
+                fontFamily: {
+                    'mono': ['Consolas', 'Monaco', 'Courier New', 'monospace'],
+                    'ui': ['-apple-system', 'BlinkMacSystemFont', 'Segoe UI', 'sans-serif']
+                }
+            }
+        }
+    };
+    </script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <style>
+        .resizer {
+            width: 4px;
+            background: #3e3e42;
+            cursor: col-resize;
+            user-select: none;
+        }
+        .resizer:hover {
+            background: #007acc;
+        }
+        .tree-node {
+            transition: background-color 0.1s ease;
+        }
+        .tree-node:hover {
+            background-color: #2d2d30;
+        }
+        .tree-node.selected {
+            background-color: #094771;
+            border-left: 2px solid #007acc;
+        }
+        .connection-pulse {
+            animation: pulse 2s infinite;
+        }
+        @keyframes pulse {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.5; }
+        }
+        .syntax-highlight .string { color: #ce9178; }
+        .syntax-highlight .number { color: #b5cea8; }
+        .syntax-highlight .boolean { color: #569cd6; }
+        .syntax-highlight .keyword { color: #c586c0; }
+        .syntax-highlight .property { color: #9cdcfe; }
+    </style>
+</head>
+<body class="bg-dark-primary text-dark-text font-ui overflow-hidden">
+    <!-- @COMPONENT: MainLayout [full application layout] -->
+    <div class="flex flex-col h-screen">
+        <!-- Header/Toolbar -->
+        <!-- @COMPONENT: Toolbar [main application toolbar] -->
+        <div class="bg-dark-secondary border-b border-dark-border px-4 py-2 flex items-center justify-between">
+            <div class="flex items-center space-x-4">
+                <h1 class="text-lg font-semibold text-white">Zenith WebSocket Explorer</h1>
+                <div class="flex items-center space-x-2 text-sm">
+                    <!-- @STATE: connectionStatus:string = 'idle' -->
+                    <div class="flex items-center space-x-1">
+                        <div class="w-2 h-2 bg-dark-success rounded-full connection-pulse" data-bind="connectionStatus === 'connected'"></div>
+                        <span class="text-dark-success" data-bind="connectionCount">3 sessions</span>
+                    </div>
+                </div>
+            </div>
+            <div class="flex items-center space-x-2">
+                <button class="px-3 py-1 bg-dark-surface hover:bg-dark-border rounded text-sm border border-dark-border" data-event="click:startMockClient">
+                    <i class="fas fa-play mr-1"></i>Start Mock Client
+                </button>
+                <button class="px-3 py-1 bg-dark-surface hover:bg-dark-border rounded text-sm border border-dark-border" data-event="click:clearSessions">
+                    <i class="fas fa-trash mr-1"></i>Clear All
+                </button>
+            </div>
+        </div>
+        <!-- @END_COMPONENT: Toolbar -->
+
+        <!-- Main Content Area -->
+        <div class="flex flex-1 overflow-hidden">
+            <!-- Left Panel: Tree Explorer -->
+            <!-- @COMPONENT: TreeExplorer [game object hierarchy browser] -->
+            <div class="w-1/3 bg-dark-secondary border-r border-dark-border flex flex-col">
+                <!-- Search Bar -->
+                <div class="p-3 border-b border-dark-border">
+                    <div class="relative">
+                        <i class="fas fa-search absolute left-3 top-1/2 transform -translate-y-1/2 text-dark-text-secondary"></i>
+                        <input 
+                            type="text" 
+                            placeholder="Search objects..." 
+                            class="w-full pl-9 pr-3 py-2 bg-dark-surface border border-dark-border rounded text-sm font-mono focus:border-dark-accent focus:outline-none"
+                            data-event="input:handleSearch"
+                            data-mock="true"
+                        />
+                    </div>
+                </div>
+
+                <!-- Connection Sessions -->
+                <div class="px-3 py-2 border-b border-dark-border">
+                    <div class="text-xs font-semibold text-dark-text-secondary mb-2">ACTIVE SESSIONS</div>
+                    <!-- @MAP: activeSessions.map(session => ( -->
+                    <div class="mb-1 last:mb-0">
+                        <div class="flex items-center justify-between text-sm p-2 bg-dark-surface rounded hover:bg-dark-border cursor-pointer tree-node" data-event="click:selectSession">
+                            <div class="flex items-center space-x-2">
+                                <div class="w-2 h-2 bg-dark-success rounded-full"></div>
+                                <span class="font-mono" data-bind="session.name" data-mock="true">Game Session 1</span>
+                            </div>
+                            <span class="text-dark-text-secondary text-xs" data-bind="session.playerCount" data-mock="true">2 players</span>
+                        </div>
+                    </div>
+                    <div class="mb-1 last:mb-0">
+                        <div class="flex items-center justify-between text-sm p-2 bg-dark-surface rounded hover:bg-dark-border cursor-pointer tree-node">
+                            <div class="flex items-center space-x-2">
+                                <div class="w-2 h-2 bg-dark-warning rounded-full"></div>
+                                <span class="font-mono" data-mock="true">Test Environment</span>
+                            </div>
+                            <span class="text-dark-text-secondary text-xs" data-mock="true">Mock</span>
+                        </div>
+                    </div>
+                    <div class="mb-1 last:mb-0">
+                        <div class="flex items-center justify-between text-sm p-2 bg-dark-surface rounded hover:bg-dark-border cursor-pointer tree-node">
+                            <div class="flex items-center space-x-2">
+                                <div class="w-2 h-2 bg-dark-success rounded-full"></div>
+                                <span class="font-mono" data-mock="true">Studio Testing</span>
+                            </div>
+                            <span class="text-dark-text-secondary text-xs" data-mock="true">1 player</span>
+                        </div>
+                    </div>
+                    <!-- @END_MAP )) -->
+                </div>
+
+                <!-- Object Tree -->
+                <div class="flex-1 overflow-y-auto">
+                    <div class="text-xs font-semibold text-dark-text-secondary px-3 py-2">OBJECT HIERARCHY</div>
+                    
+                    <!-- @MAP: gameObjects.map(obj => ( -->
+                    <!-- Game Node (Root) -->
+                    <div class="tree-node selected" data-event="click:selectNode">
+                        <div class="flex items-center py-1 px-3 text-sm">
+                            <i class="fas fa-chevron-down w-3 mr-2 text-dark-text-secondary"></i>
+                            <i class="fas fa-gamepad mr-2 text-blue-400"></i>
+                            <span class="font-mono" data-bind="obj.name" data-mock="true">game</span>
+                        </div>
+                    </div>
+
+                    <!-- Workspace -->
+                    <div class="tree-node" data-event="click:selectNode">
+                        <div class="flex items-center py-1 px-3 text-sm" style="padding-left: 2rem;">
+                            <i class="fas fa-chevron-down w-3 mr-2 text-dark-text-secondary"></i>
+                            <i class="fas fa-cube mr-2 text-green-400"></i>
+                            <span class="font-mono" data-mock="true">Workspace</span>
+                        </div>
+                    </div>
+
+                    <!-- Parts in Workspace -->
+                    <div class="tree-node" data-event="click:selectNode">
+                        <div class="flex items-center py-1 px-3 text-sm" style="padding-left: 3rem;">
+                            <i class="fas fa-chevron-right w-3 mr-2 text-dark-text-secondary"></i>
+                            <i class="fas fa-square mr-2 text-yellow-400"></i>
+                            <span class="font-mono" data-mock="true">Baseplate</span>
+                        </div>
+                    </div>
+
+                    <div class="tree-node" data-event="click:selectNode">
+                        <div class="flex items-center py-1 px-3 text-sm" style="padding-left: 3rem;">
+                            <i class="fas fa-chevron-down w-3 mr-2 text-dark-text-secondary"></i>
+                            <i class="fas fa-running mr-2 text-purple-400"></i>
+                            <span class="font-mono" data-mock="true">SpawnLocation</span>
+                        </div>
+                    </div>
+
+                    <!-- Decal inside SpawnLocation -->
+                    <div class="tree-node" data-event="click:selectNode">
+                        <div class="flex items-center py-1 px-3 text-sm" style="padding-left: 4rem;">
+                            <i class="w-3 mr-2"></i>
+                            <i class="fas fa-image mr-2 text-pink-400"></i>
+                            <span class="font-mono" data-mock="true">Decal</span>
+                        </div>
+                    </div>
+
+                    <!-- Players Service -->
+                    <div class="tree-node" data-event="click:selectNode">
+                        <div class="flex items-center py-1 px-3 text-sm" style="padding-left: 2rem;">
+                            <i class="fas fa-chevron-down w-3 mr-2 text-dark-text-secondary"></i>
+                            <i class="fas fa-users mr-2 text-cyan-400"></i>
+                            <span class="font-mono" data-mock="true">Players</span>
+                        </div>
+                    </div>
+
+                    <!-- Player -->
+                    <div class="tree-node" data-event="click:selectNode">
+                        <div class="flex items-center py-1 px-3 text-sm" style="padding-left: 3rem;">
+                            <i class="fas fa-chevron-down w-3 mr-2 text-dark-text-secondary"></i>
+                            <i class="fas fa-user mr-2 text-orange-400"></i>
+                            <span class="font-mono" data-mock="true">Player1</span>
+                        </div>
+                    </div>
+
+                    <!-- PlayerGui -->
+                    <div class="tree-node" data-event="click:selectNode">
+                        <div class="flex items-center py-1 px-3 text-sm" style="padding-left: 4rem;">
+                            <i class="fas fa-chevron-right w-3 mr-2 text-dark-text-secondary"></i>
+                            <i class="fas fa-desktop mr-2 text-indigo-400"></i>
+                            <span class="font-mono" data-mock="true">PlayerGui</span>
+                        </div>
+                    </div>
+
+                    <!-- ReplicatedStorage -->
+                    <div class="tree-node" data-event="click:selectNode">
+                        <div class="flex items-center py-1 px-3 text-sm" style="padding-left: 2rem;">
+                            <i class="fas fa-chevron-right w-3 mr-2 text-dark-text-secondary"></i>
+                            <i class="fas fa-database mr-2 text-teal-400"></i>
+                            <span class="font-mono" data-mock="true">ReplicatedStorage</span>
+                        </div>
+                    </div>
+
+                    <!-- ServerScriptService -->
+                    <div class="tree-node" data-event="click:selectNode">
+                        <div class="flex items-center py-1 px-3 text-sm" style="padding-left: 2rem;">
+                            <i class="fas fa-chevron-right w-3 mr-2 text-dark-text-secondary"></i>
+                            <i class="fas fa-code mr-2 text-red-400"></i>
+                            <span class="font-mono" data-mock="true">ServerScriptService</span>
+                        </div>
+                    </div>
+
+                    <!-- Lighting -->
+                    <div class="tree-node" data-event="click:selectNode">
+                        <div class="flex items-center py-1 px-3 text-sm" style="padding-left: 2rem;">
+                            <i class="fas fa-chevron-right w-3 mr-2 text-dark-text-secondary"></i>
+                            <i class="fas fa-sun mr-2 text-yellow-300"></i>
+                            <span class="font-mono" data-mock="true">Lighting</span>
+                        </div>
+                    </div>
+                    <!-- @END_MAP )) -->
+                </div>
+            </div>
+            <!-- @END_COMPONENT: TreeExplorer -->
+
+            <!-- Resizer -->
+            <div class="resizer" data-functionality="Allows resizing between explorer and properties panels"></div>
+
+            <!-- Right Panel: Properties -->
+            <!-- @COMPONENT: PropertiesPanel [object details and values display] -->
+            <div class="flex-1 bg-dark-primary flex flex-col">
+                <!-- Properties Header -->
+                <div class="bg-dark-secondary border-b border-dark-border px-4 py-3">
+                    <div class="flex items-center justify-between">
+                        <h2 class="text-sm font-semibold">Properties</h2>
+                        <div class="flex items-center space-x-2 text-xs text-dark-text-secondary">
+                            <span data-bind="selectedObject.className" data-mock="true">Part</span>
+                            <span>•</span>
+                            <span data-bind="selectedObject.name" data-mock="true">SpawnLocation</span>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Properties Content -->
+                <div class="flex-1 overflow-y-auto p-4">
+                    <div class="space-y-4">
+                        <!-- Basic Properties -->
+                        <div class="bg-dark-secondary rounded-lg p-4 border border-dark-border">
+                            <h3 class="text-sm font-semibold text-dark-text-secondary mb-3">BASIC</h3>
+                            <div class="space-y-2 text-sm font-mono">
+                                <div class="flex justify-between items-center">
+                                    <span class="text-dark-text-secondary">Name</span>
+                                    <span class="syntax-highlight"><span class="string" data-bind="selectedObject.Name" data-mock="true">"SpawnLocation"</span></span>
+                                </div>
+                                <div class="flex justify-between items-center">
+                                    <span class="text-dark-text-secondary">ClassName</span>
+                                    <span class="syntax-highlight"><span class="string" data-bind="selectedObject.ClassName" data-mock="true">"SpawnPart"</span></span>
+                                </div>
+                                <div class="flex justify-between items-center">
+                                    <span class="text-dark-text-secondary">Parent</span>
+                                    <span class="syntax-highlight"><span class="property" data-bind="selectedObject.Parent" data-mock="true">Workspace</span></span>
+                                </div>
+                                <div class="flex justify-between items-center">
+                                    <span class="text-dark-text-secondary">Archivable</span>
+                                    <span class="syntax-highlight"><span class="boolean" data-bind="selectedObject.Archivable" data-mock="true">true</span></span>
+                                </div>
+                            </div>
+                        </div>
+
+                        <!-- Appearance Properties -->
+                        <div class="bg-dark-secondary rounded-lg p-4 border border-dark-border">
+                            <h3 class="text-sm font-semibold text-dark-text-secondary mb-3">APPEARANCE</h3>
+                            <div class="space-y-2 text-sm font-mono">
+                                <div class="flex justify-between items-center">
+                                    <span class="text-dark-text-secondary">BrickColor</span>
+                                    <div class="flex items-center space-x-2">
+                                        <div class="w-4 h-4 bg-green-500 rounded border border-dark-border" data-mock="true"></div>
+                                        <span class="syntax-highlight"><span class="string" data-mock="true">"Bright green"</span></span>
+                                    </div>
+                                </div>
+                                <div class="flex justify-between items-center">
+                                    <span class="text-dark-text-secondary">Material</span>
+                                    <span class="syntax-highlight"><span class="property" data-mock="true">Enum.Material.Plastic</span></span>
+                                </div>
+                                <div class="flex justify-between items-center">
+                                    <span class="text-dark-text-secondary">Transparency</span>
+                                    <span class="syntax-highlight"><span class="number" data-mock="true">0</span></span>
+                                </div>
+                                <div class="flex justify-between items-center">
+                                    <span class="text-dark-text-secondary">Size</span>
+                                    <span class="syntax-highlight"><span class="number" data-mock="true">4, 1.2, 4</span></span>
+                                </div>
+                            </div>
+                        </div>
+
+                        <!-- Transform Properties -->
+                        <div class="bg-dark-secondary rounded-lg p-4 border border-dark-border">
+                            <h3 class="text-sm font-semibold text-dark-text-secondary mb-3">TRANSFORM</h3>
+                            <div class="space-y-2 text-sm font-mono">
+                                <div class="flex justify-between items-center">
+                                    <span class="text-dark-text-secondary">Position</span>
+                                    <span class="syntax-highlight"><span class="number" data-mock="true">0, 0.6, 0</span></span>
+                                </div>
+                                <div class="flex justify-between items-center">
+                                    <span class="text-dark-text-secondary">Rotation</span>
+                                    <span class="syntax-highlight"><span class="number" data-mock="true">0, 0, 0</span></span>
+                                </div>
+                                <div class="flex justify-between items-center">
+                                    <span class="text-dark-text-secondary">CFrame</span>
+                                    <span class="syntax-highlight text-xs"><span class="number" data-mock="true">0, 0.6, 0, 1, 0, 0, 0, 1, 0, 0, 0, 1</span></span>
+                                </div>
+                            </div>
+                        </div>
+
+                        <!-- Physics Properties -->
+                        <div class="bg-dark-secondary rounded-lg p-4 border border-dark-border">
+                            <h3 class="text-sm font-semibold text-dark-text-secondary mb-3">PHYSICS</h3>
+                            <div class="space-y-2 text-sm font-mono">
+                                <div class="flex justify-between items-center">
+                                    <span class="text-dark-text-secondary">Anchored</span>
+                                    <span class="syntax-highlight"><span class="boolean" data-mock="true">true</span></span>
+                                </div>
+                                <div class="flex justify-between items-center">
+                                    <span class="text-dark-text-secondary">CanCollide</span>
+                                    <span class="syntax-highlight"><span class="boolean" data-mock="true">true</span></span>
+                                </div>
+                                <div class="flex justify-between items-center">
+                                    <span class="text-dark-text-secondary">Shape</span>
+                                    <span class="syntax-highlight"><span class="property" data-mock="true">Enum.PartType.Block</span></span>
+                                </div>
+                                <div class="flex justify-between items-center">
+                                    <span class="text-dark-text-secondary">TopSurface</span>
+                                    <span class="syntax-highlight"><span class="property" data-mock="true">Enum.SurfaceType.Smooth</span></span>
+                                </div>
+                            </div>
+                        </div>
+
+                        <!-- Special Properties (SpawnLocation) -->
+                        <div class="bg-dark-secondary rounded-lg p-4 border border-dark-border">
+                            <h3 class="text-sm font-semibold text-dark-text-secondary mb-3">SPAWN</h3>
+                            <div class="space-y-2 text-sm font-mono">
+                                <div class="flex justify-between items-center">
+                                    <span class="text-dark-text-secondary">Enabled</span>
+                                    <span class="syntax-highlight"><span class="boolean" data-mock="true">true</span></span>
+                                </div>
+                                <div class="flex justify-between items-center">
+                                    <span class="text-dark-text-secondary">Neutral</span>
+                                    <span class="syntax-highlight"><span class="boolean" data-mock="true">true</span></span>
+                                </div>
+                                <div class="flex justify-between items-center">
+                                    <span class="text-dark-text-secondary">AllowTeamChangeOnTouch</span>
+                                    <span class="syntax-highlight"><span class="boolean" data-mock="true">false</span></span>
+                                </div>
+                                <div class="flex justify-between items-center">
+                                    <span class="text-dark-text-secondary">Duration</span>
+                                    <span class="syntax-highlight"><span class="number" data-mock="true">10</span></span>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            <!-- @END_COMPONENT: PropertiesPanel -->
+        </div>
+
+        <!-- Bottom Panel: WebSocket Server Status -->
+        <!-- @COMPONENT: ServerStatus [WebSocket server status and logs] -->
+        <div class="bg-dark-secondary border-t border-dark-border h-48 flex flex-col">
+            <!-- Status Header -->
+            <div class="px-4 py-2 border-b border-dark-border flex items-center justify-between">
+                <div class="flex items-center space-x-4">
+                    <h3 class="text-sm font-semibold">WebSocket Server</h3>
+                    <div class="flex items-center space-x-2 text-sm">
+                        <div class="flex items-center space-x-1">
+                            <div class="w-2 h-2 bg-dark-success rounded-full"></div>
+                            <span class="text-dark-success">ws://localhost:8080</span>
+                        </div>
+                    </div>
+                </div>
+                <div class="flex items-center space-x-2">
+                    <button class="px-2 py-1 text-xs bg-dark-surface hover:bg-dark-border rounded border border-dark-border" data-event="click:clearLogs">
+                        <i class="fas fa-trash mr-1"></i>Clear
+                    </button>
+                    <button class="px-2 py-1 text-xs bg-dark-surface hover:bg-dark-border rounded border border-dark-border" data-event="click:exportLogs">
+                        <i class="fas fa-download mr-1"></i>Export
+                    </button>
+                </div>
+            </div>
+
+            <!-- Server Logs -->
+            <div class="flex-1 overflow-y-auto p-3 font-mono text-xs space-y-1">
+                <!-- @MAP: serverLogs.map(log => ( -->
+                <div class="flex items-start space-x-3 text-dark-text-secondary">
+                    <span class="text-dark-text-secondary" data-bind="log.timestamp" data-mock="true">14:23:01</span>
+                    <span class="text-dark-success" data-bind="log.level" data-mock="true">[INFO]</span>
+                    <span data-bind="log.message" data-mock="true">WebSocket server listening on ws://localhost:8080</span>
+                </div>
+                <div class="flex items-start space-x-3">
+                    <span class="text-dark-text-secondary" data-mock="true">14:23:15</span>
+                    <span class="text-dark-success" data-mock="true">[CONN]</span>
+                    <span data-mock="true">New connection from 192.168.1.100:52341 (Session: Game_12345)</span>
+                </div>
+                <div class="flex items-start space-x-3">
+                    <span class="text-dark-text-secondary" data-mock="true">14:23:16</span>
+                    <span class="text-blue-400" data-mock="true">[RECV]</span>
+                    <span data-mock="true">{"type":"objectAdded","path":"game.Workspace.Part1","className":"Part","properties":{"Name":"Part1","Position":[0,5,0]}}</span>
+                </div>
+                <div class="flex items-start space-x-3">
+                    <span class="text-dark-text-secondary" data-mock="true">14:23:18</span>
+                    <span class="text-purple-400" data-mock="true">[SEND]</span>
+                    <span data-mock="true">{"type":"propertyRequest","path":"game.Workspace.Part1","properties":["Position","Size","Material"]}</span>
+                </div>
+                <div class="flex items-start space-x-3">
+                    <span class="text-dark-text-secondary" data-mock="true">14:23:22</span>
+                    <span class="text-dark-success" data-mock="true">[CONN]</span>
+                    <span data-mock="true">New connection from 127.0.0.1:52342 (Session: TestEnv_Mock)</span>
+                </div>
+                <div class="flex items-start space-x-3">
+                    <span class="text-dark-text-secondary" data-mock="true">14:23:25</span>
+                    <span class="text-blue-400" data-mock="true">[RECV]</span>
+                    <span data-mock="true">{"type":"hierarchyUpdate","objects":[{"path":"game.Players.Player1","className":"Player","children":["PlayerGui","PlayerScripts"]}]}</span>
+                </div>
+                <div class="flex items-start space-x-3">
+                    <span class="text-dark-text-secondary" data-mock="true">14:23:28</span>
+                    <span class="text-dark-warning" data-mock="true">[WARN]</span>
+                    <span data-mock="true">Connection timeout for session Game_12345, attempting reconnection...</span>
+                </div>
+                <div class="flex items-start space-x-3">
+                    <span class="text-dark-text-secondary" data-mock="true">14:23:30</span>
+                    <span class="text-dark-success" data-mock="true">[INFO]</span>
+                    <span data-mock="true">Session Game_12345 reconnected successfully</span>
+                </div>
+                <!-- @END_MAP )) -->
+            </div>
+        </div>
+        <!-- @END_COMPONENT: ServerStatus -->
+    </div>
+    <!-- @END_COMPONENT: MainLayout -->
+
+    <!-- Context Menu (Hidden by default) -->
+    <!-- @COMPONENT: ContextMenu [right-click actions for tree nodes] -->
+    <div id="contextMenu" class="fixed hidden bg-dark-surface border border-dark-border rounded-lg shadow-xl py-1 z-50 text-sm">
+        <button class="w-full px-3 py-2 text-left hover:bg-dark-border flex items-center space-x-2" data-event="click:copyPath">
+            <i class="fas fa-copy w-4"></i>
+            <span>Copy Path</span>
+        </button>
+        <button class="w-full px-3 py-2 text-left hover:bg-dark-border flex items-center space-x-2" data-event="click:copyObject">
+            <i class="fas fa-clone w-4"></i>
+            <span>Copy Object</span>
+        </button>
+        <hr class="border-dark-border my-1">
+        <button class="w-full px-3 py-2 text-left hover:bg-dark-border flex items-center space-x-2" data-event="click:deleteObject">
+            <i class="fas fa-trash w-4 text-dark-error"></i>
+            <span class="text-dark-error">Delete</span>
+        </button>
+    </div>
+    <!-- @END_COMPONENT: ContextMenu -->
+
+    <script>
+    (function() {
+        // TODO: Implement WebSocket server connection logic
+        // TODO: Implement real-time object hierarchy updates
+        // TODO: Implement property editing and synchronization
+        // TODO: Implement search functionality with live filtering
+        // TODO: Implement drag-and-drop reparenting
+        // TODO: Implement context menu actions
+        // TODO: Implement session management for multiple Roblox connections
+        
+        // Mock data for demonstration
+        let selectedNode = null;
+        let expandedNodes = new Set(['game', 'workspace', 'players', 'player1', 'spawnlocation']);
+        
+        // Tree node selection handling
+        document.querySelectorAll('.tree-node').forEach(node => {
+            node.addEventListener('click', function(e) {
+                e.preventDefault();
+                e.stopPropagation();
+                
+                // Remove previous selection
+                document.querySelectorAll('.tree-node.selected').forEach(n => {
+                    n.classList.remove('selected');
+                });
+                
+                // Add selection to clicked node
+                this.classList.add('selected');
+                selectedNode = this;
+                
+                // TODO: Update properties panel with selected object data
+                console.log('Selected node:', this);
+            });
+            
+            // Right-click context menu
+            node.addEventListener('contextmenu', function(e) {
+                e.preventDefault();
+                const contextMenu = document.getElementById('contextMenu');
+                contextMenu.style.left = e.pageX + 'px';
+                contextMenu.style.top = e.pageY + 'px';
+                contextMenu.classList.remove('hidden');
+                
+                // Hide menu when clicking elsewhere
+                document.addEventListener('click', function hideMenu() {
+                    contextMenu.classList.add('hidden');
+                    document.removeEventListener('click', hideMenu);
+                });
+            });
+        });
+        
+        // Expand/collapse functionality
+        document.querySelectorAll('.fas.fa-chevron-right, .fas.fa-chevron-down').forEach(chevron => {
+            chevron.addEventListener('click', function(e) {
+                e.stopPropagation();
+                
+                if (this.classList.contains('fa-chevron-right')) {
+                    this.classList.remove('fa-chevron-right');
+                    this.classList.add('fa-chevron-down');
+                    // TODO: Show child nodes
+                } else {
+                    this.classList.remove('fa-chevron-down');
+                    this.classList.add('fa-chevron-right');
+                    // TODO: Hide child nodes
+                }
+            });
+        });
+        
+        // Search functionality
+        const searchInput = document.querySelector('input[placeholder="Search objects..."]');
+        if (searchInput) {
+            searchInput.addEventListener('input', function() {
+                const query = this.value.toLowerCase();
+                // TODO: Implement search filtering of tree nodes
+                console.log('Searching for:', query);
+            });
+        }
+        
+        // Mock WebSocket connection simulation
+        let mockConnectionInterval;
+        
+        function startMockConnection() {
+            // TODO: Replace with actual WebSocket.connect() implementation
+            console.log('Starting mock WebSocket client...');
+            
+            // Simulate periodic data updates
+            mockConnectionInterval = setInterval(() => {
+                const logContainer = document.querySelector('.overflow-y-auto.font-mono');
+                if (logContainer) {
+                    const timestamp = new Date().toLocaleTimeString();
+                    const mockMessages = [
+                        `[RECV] {"type":"propertyChanged","path":"game.Workspace.Part1","property":"Position","value":[${Math.random()*10},${Math.random()*10},${Math.random()*10}]}`,
+                        `[RECV] {"type":"objectAdded","path":"game.Workspace.Part${Math.floor(Math.random()*100)}","className":"Part"}`,
+                        `[SEND] {"type":"getChildren","path":"game.Players"}`,
+                        `[INFO] Heartbeat received from session Game_12345`
+                    ];
+                    
+                    const randomMessage = mockMessages[Math.floor(Math.random() * mockMessages.length)];
+                    const newLogEntry = document.createElement('div');
+                    newLogEntry.className = 'flex items-start space-x-3';
+                    newLogEntry.innerHTML = `
+                        <span class="text-dark-text-secondary">${timestamp}</span>
+                        <span class="text-blue-400">[MOCK]</span>
+                        <span>${randomMessage}</span>
+                    `;
+                    
+                    logContainer.appendChild(newLogEntry);
+                    logContainer.scrollTop = logContainer.scrollHeight;
+                }
+            }, 2000);
+        }
+        
+        // Button event handlers
+        document.querySelector('[data-event="click:startMockClient"]')?.addEventListener('click', startMockConnection);
+        
+        document.querySelector('[data-event="click:clearSessions"]')?.addEventListener('click', function() {
+            if (mockConnectionInterval) {
+                clearInterval(mockConnectionInterval);
+                mockConnectionInterval = null;
+            }
+            console.log('All sessions cleared');
+        });
+        
+        document.querySelector('[data-event="click:clearLogs"]')?.addEventListener('click', function() {
+            const logContainer = document.querySelector('.overflow-y-auto.font-mono');
+            if (logContainer) {
+                logContainer.innerHTML = '';
+            }
+        });
+        
+        // Panel resizing functionality
+        const resizer = document.querySelector('.resizer');
+        if (resizer) {
+            let isResizing = false;
+            
+            resizer.addEventListener('mousedown', function(e) {
+                isResizing = true;
+                document.body.style.cursor = 'col-resize';
+            });
+            
+            document.addEventListener('mousemove', function(e) {
+                if (!isResizing) return;
+                
+                const container = document.querySelector('.flex.flex-1.overflow-hidden');
+                const leftPanel = container.querySelector('.w-1\\/3');
+                const rect = container.getBoundingClientRect();
+                const newWidth = ((e.clientX - rect.left) / rect.width) * 100;
+                
+                if (newWidth > 20 && newWidth < 80) {
+                    leftPanel.style.width = newWidth + '%';
+                }
+            });
+            
+            document.addEventListener('mouseup', function() {
+                isResizing = false;
+                document.body.style.cursor = '';
+            });
+        }
+        
+        console.log('Zenith WebSocket Explorer initialized');
+    })();
+    </script>
+</body>
+</html>

@@ -1,0 +1,528 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Zenith WebSocket Explorer - Dex-Inspired Game Debugger</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600&family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
+    <script>
+        tailwind.config = {
+            theme: {
+                extend: {
+                    colors: {
+                        'dex-bg': '#1e1e1e',
+                        'dex-panel': '#2d2d30',
+                        'dex-border': '#3e3e42',
+                        'dex-accent': '#007acc',
+                        'dex-error': '#f92672',
+                        'dex-success': '#a6e22e',
+                        'dex-warning': '#e6db74',
+                        'dex-text': '#ffffff',
+                        'dex-text-secondary': '#cccccc',
+                        'dex-text-muted': '#969696',
+                        'dex-hover': '#094771',
+                        'dex-selected': '#37373d',
+                    },
+                    fontFamily: {
+                        'mono': ['JetBrains Mono', 'monospace'],
+                        'ui': ['Inter', 'system-ui', 'sans-serif'],
+                    }
+                }
+            }
+        };
+    </script>
+    <style>
+        .custom-scrollbar::-webkit-scrollbar {
+            width: 12px;
+        }
+        .custom-scrollbar::-webkit-scrollbar-track {
+            background: #1e1e1e;
+        }
+        .custom-scrollbar::-webkit-scrollbar-thumb {
+            background: #3e3e42;
+            border-radius: 6px;
+        }
+        .custom-scrollbar::-webkit-scrollbar-thumb:hover {
+            background: #4e4e52;
+        }
+        
+        .splitter {
+            cursor: col-resize;
+            user-select: none;
+        }
+        
+        .tree-indent {
+            width: 20px;
+            display: inline-block;
+        }
+        
+        .expand-icon {
+            transition: transform 0.2s ease;
+        }
+        
+        .expand-icon.expanded {
+            transform: rotate(90deg);
+        }
+        
+        .tree-node:hover {
+            background-color: #2d2d30;
+        }
+        
+        .tree-node.selected {
+            background-color: #37373d;
+        }
+        
+        .properties-grid {
+            display: grid;
+            grid-template-columns: 1fr 2fr;
+            gap: 1px;
+            background: #3e3e42;
+        }
+        
+        .property-cell {
+            background: #2d2d30;
+            padding: 8px 12px;
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 12px;
+        }
+        
+        .status-indicator {
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+            display: inline-block;
+        }
+    </style>
+</head>
+<body class="bg-dex-bg text-dex-text font-ui overflow-hidden">
+    <!-- @COMPONENT: MainLayout -->
+    <div class="h-screen flex flex-col">
+        <!-- Connection Status Bar -->
+        <!-- @COMPONENT: ConnectionStatusBar [websocketUrl, connectionStatus, onConnect, onDisconnect] -->
+        <div class="bg-dex-panel border-b border-dex-border px-4 py-3 flex items-center gap-4 flex-shrink-0">
+            <div class="flex items-center gap-2">
+                <span class="status-indicator bg-dex-error" data-bind="connectionStatus" data-mock="true"></span>
+                <span class="text-sm font-medium text-dex-error" data-bind="connectionStatus">Disconnected</span>
+            </div>
+            
+            <div class="flex-1 flex items-center gap-3">
+                <input 
+                    type="text" 
+                    data-bind="websocketUrl"
+                    value="ws://localhost:8080" 
+                    placeholder="WebSocket URL (e.g., ws://localhost:8080)"
+                    class="flex-1 bg-dex-bg border border-dex-border rounded px-3 py-1 text-sm font-mono text-dex-text focus:border-dex-accent focus:outline-none"
+                    data-mock="true"
+                />
+                <button 
+                    data-event="click:handleConnect"
+                    class="bg-dex-accent hover:bg-dex-hover text-white px-4 py-1 rounded text-sm font-medium transition-colors"
+                    data-mock="true"
+                >
+                    Connect
+                </button>
+            </div>
+            
+            <div class="text-xs text-dex-text-muted font-mono" data-bind="clientInfo" data-mock="true">
+                No client connected
+            </div>
+        </div>
+
+        <!-- Main Content Area -->
+        <div class="flex-1 flex overflow-hidden">
+            <!-- Explorer Panel -->
+            <!-- @COMPONENT: ExplorerPanel [gameObjects, selectedObject, searchQuery, onSelectObject, onExpandNode] -->
+            <div class="w-2/5 bg-dex-panel border-r border-dex-border flex flex-col" data-mock="true">
+                <!-- Explorer Header -->
+                <div class="p-3 border-b border-dex-border">
+                    <h2 class="text-sm font-semibold text-dex-text mb-2">Game Explorer</h2>
+                    <div class="relative">
+                        <input 
+                            type="text" 
+                            placeholder="Search objects..."
+                            data-bind="searchQuery"
+                            class="w-full bg-dex-bg border border-dex-border rounded px-3 py-2 text-sm text-dex-text placeholder-dex-text-muted focus:border-dex-accent focus:outline-none"
+                            data-mock="true"
+                        />
+                        <div class="absolute right-3 top-1/2 transform -translate-y-1/2 text-dex-text-muted">
+                            🔍
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Tree View -->
+                <!-- @COMPONENT: TreeView [nodes, expandedNodes, selectedNode, onSelect, onExpand] -->
+                <div class="flex-1 overflow-auto custom-scrollbar" data-mock="true">
+                    <!-- @MAP: gameObjects.map(object => ( -->
+                    <!-- Game Root Node -->
+                    <div class="tree-node px-2 py-1 cursor-pointer flex items-center hover:bg-dex-hover" data-bind="gameRoot" data-mock="true">
+                        <span class="tree-indent"></span>
+                        <span class="expand-icon expanded mr-2">▶</span>
+                        <span class="w-5 h-5 mr-2 text-center">🎮</span>
+                        <span class="font-mono text-sm text-dex-text">Game</span>
+                    </div>
+
+                    <!-- Workspace Node -->
+                    <div class="tree-node px-2 py-1 cursor-pointer flex items-center hover:bg-dex-hover" data-mock="true">
+                        <span class="tree-indent"></span>
+                        <span class="tree-indent"></span>
+                        <span class="expand-icon expanded mr-2">▶</span>
+                        <span class="w-5 h-5 mr-2 text-center">🌍</span>
+                        <span class="font-mono text-sm text-dex-text">Workspace</span>
+                    </div>
+
+                    <!-- Sample Parts -->
+                    <div class="tree-node selected px-2 py-1 cursor-pointer flex items-center bg-dex-selected" data-mock="true">
+                        <span class="tree-indent"></span>
+                        <span class="tree-indent"></span>
+                        <span class="tree-indent"></span>
+                        <span class="w-5 h-5 mr-2 text-center">📦</span>
+                        <span class="font-mono text-sm text-dex-text">Baseplate</span>
+                    </div>
+
+                    <div class="tree-node px-2 py-1 cursor-pointer flex items-center hover:bg-dex-hover" data-mock="true">
+                        <span class="tree-indent"></span>
+                        <span class="tree-indent"></span>
+                        <span class="tree-indent"></span>
+                        <span class="expand-icon mr-2">▶</span>
+                        <span class="w-5 h-5 mr-2 text-center">👤</span>
+                        <span class="font-mono text-sm text-dex-text">SpawnLocation</span>
+                    </div>
+
+                    <!-- Players Node -->
+                    <div class="tree-node px-2 py-1 cursor-pointer flex items-center hover:bg-dex-hover" data-mock="true">
+                        <span class="tree-indent"></span>
+                        <span class="tree-indent"></span>
+                        <span class="expand-icon mr-2">▶</span>
+                        <span class="w-5 h-5 mr-2 text-center">👥</span>
+                        <span class="font-mono text-sm text-dex-text">Players</span>
+                    </div>
+
+                    <!-- Lighting Node -->
+                    <div class="tree-node px-2 py-1 cursor-pointer flex items-center hover:bg-dex-hover" data-mock="true">
+                        <span class="tree-indent"></span>
+                        <span class="tree-indent"></span>
+                        <span class="expand-icon mr-2">▶</span>
+                        <span class="w-5 h-5 mr-2 text-center">💡</span>
+                        <span class="font-mono text-sm text-dex-text">Lighting</span>
+                    </div>
+
+                    <!-- ReplicatedStorage Node -->
+                    <div class="tree-node px-2 py-1 cursor-pointer flex items-center hover:bg-dex-hover" data-mock="true">
+                        <span class="tree-indent"></span>
+                        <span class="tree-indent"></span>
+                        <span class="expand-icon mr-2">▶</span>
+                        <span class="w-5 h-5 mr-2 text-center">🔄</span>
+                        <span class="font-mono text-sm text-dex-text">ReplicatedStorage</span>
+                    </div>
+
+                    <!-- StarterGui Node -->
+                    <div class="tree-node px-2 py-1 cursor-pointer flex items-center hover:bg-dex-hover" data-mock="true">
+                        <span class="tree-indent"></span>
+                        <span class="tree-indent"></span>
+                        <span class="expand-icon mr-2">▶</span>
+                        <span class="w-5 h-5 mr-2 text-center">🖥️</span>
+                        <span class="font-mono text-sm text-dex-text">StarterGui</span>
+                    </div>
+
+                    <!-- StarterPack Node -->
+                    <div class="tree-node px-2 py-1 cursor-pointer flex items-center hover:bg-dex-hover" data-mock="true">
+                        <span class="tree-indent"></span>
+                        <span class="tree-indent"></span>
+                        <span class="expand-icon mr-2">▶</span>
+                        <span class="w-5 h-5 mr-2 text-center">🎒</span>
+                        <span class="font-mono text-sm text-dex-text">StarterPack</span>
+                    </div>
+
+                    <!-- StarterPlayer Node -->
+                    <div class="tree-node px-2 py-1 cursor-pointer flex items-center hover:bg-dex-hover" data-mock="true">
+                        <span class="tree-indent"></span>
+                        <span class="tree-indent"></span>
+                        <span class="expand-icon mr-2">▶</span>
+                        <span class="w-5 h-5 mr-2 text-center">🏃</span>
+                        <span class="font-mono text-sm text-dex-text">StarterPlayer</span>
+                    </div>
+                    <!-- @END_MAP )) -->
+                </div>
+
+                <!-- Explorer Footer -->
+                <div class="p-2 border-t border-dex-border text-xs text-dex-text-muted">
+                    <span data-bind="totalObjects" data-mock="true">127 objects</span>
+                    <span class="mx-2">•</span>
+                    <span data-bind="filteredObjects" data-mock="true">9 visible</span>
+                </div>
+            </div>
+
+            <!-- Splitter -->
+            <div class="w-1 bg-dex-border splitter hover:bg-dex-accent cursor-col-resize" data-mock="true"></div>
+
+            <!-- Properties Panel -->
+            <!-- @COMPONENT: PropertiesPanel [selectedObject, properties, onPropertyChange] -->
+            <div class="flex-1 bg-dex-bg flex flex-col" data-mock="true">
+                <!-- Properties Header -->
+                <div class="p-3 border-b border-dex-border bg-dex-panel">
+                    <div class="flex items-center gap-2 mb-2">
+                        <span class="w-5 h-5 text-center">📦</span>
+                        <h2 class="text-sm font-semibold text-dex-text" data-bind="selectedObject.name">Baseplate</h2>
+                        <span class="text-xs text-dex-text-muted font-mono" data-bind="selectedObject.className">(Part)</span>
+                    </div>
+                    <div class="text-xs text-dex-text-muted" data-bind="selectedObject.fullName">
+                        game.Workspace.Baseplate
+                    </div>
+                </div>
+
+                <!-- Properties Content -->
+                <!-- @STATE: properties:Object[] = [] -->
+                <!-- @FUNCTIONALITY: This properties panel should display real-time object properties from Roblox -->
+                <div class="flex-1 overflow-auto custom-scrollbar p-3" data-mock="true">
+                    <!-- @MAP: properties.map(property => ( -->
+                    <div class="properties-grid mb-4">
+                        <!-- Basic Properties Section -->
+                        <div class="property-cell font-semibold bg-dex-selected text-dex-text" colspan="2">
+                            Basic Properties
+                        </div>
+                        
+                        <div class="property-cell text-dex-text-secondary">Name</div>
+                        <div class="property-cell text-dex-text" data-bind="selectedObject.name">Baseplate</div>
+                        
+                        <div class="property-cell text-dex-text-secondary">ClassName</div>
+                        <div class="property-cell text-dex-warning" data-bind="selectedObject.className">Part</div>
+                        
+                        <div class="property-cell text-dex-text-secondary">Parent</div>
+                        <div class="property-cell text-dex-text" data-bind="selectedObject.parent">Workspace</div>
+                        
+                        <div class="property-cell text-dex-text-secondary">Archivable</div>
+                        <div class="property-cell text-dex-success" data-bind="selectedObject.archivable">true</div>
+                    </div>
+
+                    <div class="properties-grid mb-4">
+                        <!-- Appearance Properties Section -->
+                        <div class="property-cell font-semibold bg-dex-selected text-dex-text" colspan="2">
+                            Appearance
+                        </div>
+                        
+                        <div class="property-cell text-dex-text-secondary">BrickColor</div>
+                        <div class="property-cell text-dex-text" data-bind="selectedObject.brickColor">Medium stone grey</div>
+                        
+                        <div class="property-cell text-dex-text-secondary">Material</div>
+                        <div class="property-cell text-dex-text" data-bind="selectedObject.material">Plastic</div>
+                        
+                        <div class="property-cell text-dex-text-secondary">Color</div>
+                        <div class="property-cell flex items-center gap-2">
+                            <div class="w-4 h-4 bg-gray-500 rounded border border-dex-border" data-bind="selectedObject.color"></div>
+                            <span class="text-dex-text" data-bind="selectedObject.colorValue">0.639, 0.635, 0.647</span>
+                        </div>
+                        
+                        <div class="property-cell text-dex-text-secondary">Transparency</div>
+                        <div class="property-cell text-dex-text" data-bind="selectedObject.transparency">0</div>
+                        
+                        <div class="property-cell text-dex-text-secondary">Reflectance</div>
+                        <div class="property-cell text-dex-text" data-bind="selectedObject.reflectance">0</div>
+                    </div>
+
+                    <div class="properties-grid mb-4">
+                        <!-- Data Properties Section -->
+                        <div class="property-cell font-semibold bg-dex-selected text-dex-text" colspan="2">
+                            Data
+                        </div>
+                        
+                        <div class="property-cell text-dex-text-secondary">Position</div>
+                        <div class="property-cell text-dex-text" data-bind="selectedObject.position">0, -10, 0</div>
+                        
+                        <div class="property-cell text-dex-text-secondary">Rotation</div>
+                        <div class="property-cell text-dex-text" data-bind="selectedObject.rotation">0, 0, 0</div>
+                        
+                        <div class="property-cell text-dex-text-secondary">Size</div>
+                        <div class="property-cell text-dex-text" data-bind="selectedObject.size">512, 20, 512</div>
+                        
+                        <div class="property-cell text-dex-text-secondary">Anchored</div>
+                        <div class="property-cell text-dex-success" data-bind="selectedObject.anchored">true</div>
+                        
+                        <div class="property-cell text-dex-text-secondary">CanCollide</div>
+                        <div class="property-cell text-dex-success" data-bind="selectedObject.canCollide">true</div>
+                        
+                        <div class="property-cell text-dex-text-secondary">CanTouch</div>
+                        <div class="property-cell text-dex-success" data-bind="selectedObject.canTouch">true</div>
+                    </div>
+
+                    <div class="properties-grid mb-4">
+                        <!-- Shape Properties Section -->
+                        <div class="property-cell font-semibold bg-dex-selected text-dex-text" colspan="2">
+                            Shape
+                        </div>
+                        
+                        <div class="property-cell text-dex-text-secondary">Shape</div>
+                        <div class="property-cell text-dex-text" data-bind="selectedObject.shape">Block</div>
+                        
+                        <div class="property-cell text-dex-text-secondary">TopSurface</div>
+                        <div class="property-cell text-dex-text" data-bind="selectedObject.topSurface">Smooth</div>
+                        
+                        <div class="property-cell text-dex-text-secondary">BottomSurface</div>
+                        <div class="property-cell text-dex-text" data-bind="selectedObject.bottomSurface">Smooth</div>
+                        
+                        <div class="property-cell text-dex-text-secondary">FrontSurface</div>
+                        <div class="property-cell text-dex-text" data-bind="selectedObject.frontSurface">Smooth</div>
+                        
+                        <div class="property-cell text-dex-text-secondary">BackSurface</div>
+                        <div class="property-cell text-dex-text" data-bind="selectedObject.backSurface">Smooth</div>
+                        
+                        <div class="property-cell text-dex-text-secondary">LeftSurface</div>
+                        <div class="property-cell text-dex-text" data-bind="selectedObject.leftSurface">Smooth</div>
+                        
+                        <div class="property-cell text-dex-text-secondary">RightSurface</div>
+                        <div class="property-cell text-dex-text" data-bind="selectedObject.rightSurface">Smooth</div>
+                    </div>
+                    <!-- @END_MAP )) -->
+                </div>
+
+                <!-- Properties Footer -->
+                <div class="p-2 border-t border-dex-border text-xs text-dex-text-muted bg-dex-panel">
+                    <span data-bind="propertyCount" data-mock="true">23 properties</span>
+                    <span class="mx-2">•</span>
+                    <span data-bind="lastUpdate" data-mock="true">Updated 2s ago</span>
+                </div>
+            </div>
+        </div>
+
+        <!-- Status Bar -->
+        <div class="bg-dex-panel border-t border-dex-border px-4 py-2 flex items-center justify-between text-xs text-dex-text-muted flex-shrink-0">
+            <div class="flex items-center gap-4">
+                <span data-bind="connectionTime" data-mock="true">Connected for: --:--</span>
+                <span data-bind="messagesReceived" data-mock="true">Messages: 0</span>
+                <span data-bind="dataReceived" data-mock="true">Data: 0 KB</span>
+            </div>
+            <div class="flex items-center gap-2">
+                <span>Zenith WebSocket Explorer v1.0</span>
+            </div>
+        </div>
+    </div>
+    <!-- @END_COMPONENT: MainLayout -->
+
+    <script>
+        (() => {
+            // TODO: Implement WebSocket connection management
+            // TODO: Implement real-time tree updates from Roblox data
+            // TODO: Implement property editing and validation
+            // TODO: Implement search functionality with filtering
+            // TODO: Implement drag and drop for object hierarchy changes
+
+            // Mock functionality for demonstration
+            let isConnected = false;
+            let selectedNode = null;
+            let expandedNodes = new Set();
+
+            // Connection management
+            const connectBtn = document.querySelector('[data-event="click:handleConnect"]');
+            const statusIndicator = document.querySelector('.status-indicator');
+            const statusText = statusIndicator.nextElementSibling;
+            const urlInput = document.querySelector('[data-bind="websocketUrl"]');
+            
+            const updateConnectionStatus = (connected) => {
+                isConnected = connected;
+                if (connected) {
+                    statusIndicator.className = 'status-indicator bg-dex-success';
+                    statusText.textContent = 'Connected';
+                    statusText.className = 'text-sm font-medium text-dex-success';
+                    connectBtn.textContent = 'Disconnect';
+                } else {
+                    statusIndicator.className = 'status-indicator bg-dex-error';
+                    statusText.textContent = 'Disconnected';
+                    statusText.className = 'text-sm font-medium text-dex-error';
+                    connectBtn.textContent = 'Connect';
+                }
+            };
+
+            connectBtn.addEventListener('click', () => {
+                if (isConnected) {
+                    // TODO: Close WebSocket connection
+                    updateConnectionStatus(false);
+                } else {
+                    // TODO: Establish WebSocket connection to urlInput.value
+                    updateConnectionStatus(true);
+                }
+            });
+
+            // Tree node interactions
+            document.querySelectorAll('.tree-node').forEach(node => {
+                node.addEventListener('click', (e) => {
+                    // Remove previous selection
+                    document.querySelectorAll('.tree-node.selected').forEach(n => {
+                        n.classList.remove('selected', 'bg-dex-selected');
+                    });
+                    
+                    // Select current node
+                    node.classList.add('selected', 'bg-dex-selected');
+                    selectedNode = node;
+                    
+                    // TODO: Update properties panel with selected object data
+                });
+            });
+
+            // Expand/collapse functionality
+            document.querySelectorAll('.expand-icon').forEach(icon => {
+                icon.addEventListener('click', (e) => {
+                    e.stopPropagation();
+                    icon.classList.toggle('expanded');
+                    
+                    // TODO: Implement actual tree expansion/collapse logic
+                    // TODO: Load child nodes dynamically from WebSocket data
+                });
+            });
+
+            // Search functionality
+            const searchInput = document.querySelector('[data-bind="searchQuery"]');
+            let searchTimeout;
+            
+            searchInput.addEventListener('input', (e) => {
+                clearTimeout(searchTimeout);
+                searchTimeout = setTimeout(() => {
+                    const query = e.target.value.toLowerCase().trim();
+                    
+                    // TODO: Implement real search filtering
+                    document.querySelectorAll('.tree-node').forEach(node => {
+                        const text = node.textContent.toLowerCase();
+                        const matches = !query || text.includes(query);
+                        node.style.display = matches ? 'flex' : 'none';
+                    });
+                }, 300);
+            });
+
+            // Panel resizing
+            let isResizing = false;
+            const splitter = document.querySelector('.splitter');
+            const explorerPanel = splitter.previousElementSibling;
+            const propertiesPanel = splitter.nextElementSibling;
+
+            splitter.addEventListener('mousedown', (e) => {
+                isResizing = true;
+                document.body.style.cursor = 'col-resize';
+                e.preventDefault();
+            });
+
+            document.addEventListener('mousemove', (e) => {
+                if (!isResizing) return;
+                
+                const containerRect = splitter.parentElement.getBoundingClientRect();
+                const newWidth = ((e.clientX - containerRect.left) / containerRect.width) * 100;
+                
+                if (newWidth > 20 && newWidth < 80) {
+                    explorerPanel.style.width = `${newWidth}%`;
+                    propertiesPanel.style.width = `${100 - newWidth}%`;
+                }
+            });
+
+            document.addEventListener('mouseup', () => {
+                isResizing = false;
+                document.body.style.cursor = 'default';
+            });
+
+            // Initialize with disconnected state
+            updateConnectionStatus(false);
+
+            console.log('Zenith WebSocket Explorer initialized');
+            console.log('Ready to connect to Roblox game via WebSocket');
+        })();
+    </script>
+</body>
+</html>

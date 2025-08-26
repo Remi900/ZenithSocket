@@ -1,0 +1,363 @@
+--[[ 
+    Roblox Game Explorer Client - INCREMENTAL UPDATES (HTTP VERSION)
+    Optimized for massive instances with minimal memory churn.
+    Place in ServerScriptService.
+]]
+
+local RunService = game:GetService('RunService')
+
+-- Configuration
+local SERVER_URL =
+    'https://5fba3b54-6638-46cc-a414-c1fd94ea389f-00-27kxtge75dnxk.worf.replit.dev/' -- Replace with your Replit URL
+local UPDATE_INTERVAL = 0.1 -- seconds
+local BATCH_SIZE = 5000
+
+-- State
+local isSending = false
+local isFirstSync = true
+local lastUpdate = 0
+local previousInstances = {}
+
+--==============================================================
+-- Lightweight JSON Encoder
+--==============================================================
+local function escapeString(s)
+    return s:gsub('\\', '\\\\')
+        :gsub('"', '\\"')
+        :gsub('\n', '\\n')
+        :gsub('\r', '\\r')
+        :gsub('\t', '\\t')
+end
+
+local function jsonEncode(value)
+    local t = type(value)
+    if t == 'table' then
+        local isArray = true
+        local i = 0
+        for k, _ in pairs(value) do
+            i = i + 1
+            if k ~= i then
+                isArray = false
+                break
+            end
+        end
+        local parts = {}
+        if isArray then
+            for _, v in ipairs(value) do
+                table.insert(parts, jsonEncode(v))
+            end
+            return '[' .. table.concat(parts, ',') .. ']'
+        else
+            for k, v in pairs(value) do
+                table.insert(
+                    parts,
+                    '"' .. escapeString(tostring(k)) .. '":' .. jsonEncode(v)
+                )
+            end
+            return '{' .. table.concat(parts, ',') .. '}'
+        end
+    elseif t == 'string' then
+        return '"' .. escapeString(value) .. '"'
+    elseif t == 'number' or t == 'boolean' then
+        return tostring(value)
+    else
+        return 'null'
+    end
+end
+
+--==============================================================
+-- HTTP Helper
+--==============================================================
+local function sendHttpRequest(endpoint, data)
+    local success, response = pcall(function()
+        return request({
+            Url = SERVER_URL .. endpoint,
+            Method = 'POST',
+            Headers = {
+                ['Content-Type'] = 'application/json',
+                ['Accept-Encoding'] = 'gzip',
+            },
+            Body = jsonEncode(data or {}),
+            Timeout = 60,
+        })
+    end)
+    if success and response.Success then
+        return response.Body
+    end
+    warn('✗ Failed to send to ' .. endpoint .. ': ' .. tostring(response))
+end
+
+--==============================================================
+-- Hashing & Change Detection
+--==============================================================
+local function createHash(inst)
+    local h = inst.name .. '|' .. inst.className .. '|' .. inst.parent
+    for k, v in pairs(inst.properties) do
+        if k ~= 'Name' and k ~= 'ClassName' and k ~= 'Parent' then
+            h = h .. '|' .. k .. ':' .. tostring(v)
+        end
+    end
+    local hash = 0
+    for i = 1, #h do
+        hash = ((hash * 31) + h:byte(i)) % 2147483647
+    end
+    return hash
+end
+
+local function instancesAreEqual(a, b)
+    return a and b and a._hash == b._hash
+end
+
+--==============================================================
+-- Instance Data Collection
+--==============================================================
+local function createInstanceData(instance, parentPath)
+    local path = parentPath and (parentPath .. '.' .. instance.Name)
+        or 'game.' .. instance.Name
+    local properties = { Name = instance.Name, ClassName = instance.ClassName }
+
+    if instance:IsA('BasePart') then
+        properties.Anchored = instance.Anchored
+        properties.Material = instance.Material.Name
+        properties.Size = tostring(instance.Size)
+        properties.Position = tostring(instance.Position)
+        properties.Transparency = instance.Transparency
+    elseif instance:IsA('Players') then
+        properties.NumPlayers = instance.NumPlayers
+        properties.MaxPlayers = instance.MaxPlayers
+    elseif instance:IsA('Script') or instance:IsA('LocalScript') then
+        properties.Enabled = instance.Enabled
+        properties.Source = (instance.Source or ''):sub(1, 100)
+    elseif instance:IsA('Humanoid') then
+        properties.Health = instance.Health
+        properties.MaxHealth = instance.MaxHealth
+    end
+
+    local instData = {
+        id = 'inst_' .. math.random(1000, 9999) .. '_' .. math.floor(tick()),
+        name = instance.Name,
+        className = instance.ClassName,
+        path = path,
+        parent = instance.Parent and instance.Parent.Name or 'nil',
+        properties = properties,
+        children = {},
+    }
+    instData._hash = createHash(instData) -- store hash for faster comparison
+    return instData
+end
+
+local function collectChildren(parent, parentPath, out)
+    local children = parent:GetChildren()
+    for i, child in ipairs(children) do
+        local data = createInstanceData(child, parentPath)
+        table.insert(out, data)
+        collectChildren(child, data.path, out)
+        if i % 500 == 0 then
+            RunService.Heartbeat:Wait()
+        end
+    end
+end
+
+local function collectCurrentGameData()
+    local instances = {}
+    table.insert(instances, {
+        id = 'game_root',
+        name = 'game',
+        className = 'DataModel',
+        path = 'game',
+        parent = 'nil',
+        properties = {
+            Name = 'game',
+            ClassName = 'DataModel',
+            JobId = game.JobId,
+            PlaceId = game.PlaceId,
+            GameId = game.GameId,
+        },
+        children = {},
+        _hash = 0,
+    })
+
+    local services = {
+        'Workspace',
+        'Players',
+        'ReplicatedStorage',
+        'ServerStorage',
+        'Lighting',
+        'StarterGui',
+        'StarterPack',
+        'StarterPlayer',
+        'SoundService',
+        'TweenService',
+        'Teams',
+        'Chat',
+        'HttpService',
+        'RunService',
+        'UserInputService',
+    }
+
+    for _, name in ipairs(services) do
+        local ok, service = pcall(game.GetService, game, name)
+        if ok and service then
+            local sdata = createInstanceData(service, 'game')
+            if name == 'Workspace' then
+                sdata.properties.Gravity = service.Gravity
+                sdata.properties.CurrentCamera = service.CurrentCamera
+                        and service.CurrentCamera.Name
+                    or 'nil'
+            elseif name == 'Lighting' then
+                sdata.properties.Brightness = service.Brightness
+                sdata.properties.TimeOfDay = service.TimeOfDay
+                sdata.properties.Ambient = tostring(service.Ambient)
+            elseif name == 'Players' then
+                sdata.properties.NumPlayers = service.NumPlayers
+                sdata.properties.MaxPlayers = service.MaxPlayers
+            end
+            table.insert(instances, sdata)
+            collectChildren(service, 'game.' .. name, instances)
+        end
+    end
+    return instances
+end
+
+--==============================================================
+-- Change Detection
+--==============================================================
+local function detectChanges(current)
+    local added, modified, removed = {}, {}, {}
+    local currByPath = {}
+    for _, inst in ipairs(current) do
+        currByPath[inst.path] = inst
+    end
+
+    for path, inst in pairs(currByPath) do
+        local prev = previousInstances[path]
+        if not prev then
+            table.insert(added, inst)
+        elseif not instancesAreEqual(inst, prev) then
+            table.insert(modified, inst)
+        end
+    end
+    for path, _ in pairs(previousInstances) do
+        if not currByPath[path] then
+            table.insert(removed, path)
+        end
+    end
+    return { added = added, modified = modified, removed = removed }
+end
+
+--==============================================================
+-- HTTP Sending
+--==============================================================
+local function sendBatch(instances, batchIndex, totalBatches)
+    sendHttpRequest('/api/game-tree-batch', {
+        instances = instances,
+        batchIndex = batchIndex,
+        totalBatches = totalBatches,
+        isLastBatch = (batchIndex == totalBatches - 1),
+    })
+end
+
+local function sendIncrementalUpdate(added, modified, removed)
+    sendHttpRequest(
+        '/api/incremental-update',
+        { added = added, modified = modified, removed = removed }
+    )
+end
+
+local function sendPing()
+    sendHttpRequest('/api/ping', {})
+end
+
+--==============================================================
+-- Main Loop
+--==============================================================
+local function sendUpdates()
+    if isSending then
+        return
+    end
+    isSending = true
+    local ok, err = pcall(function()
+        local current = collectCurrentGameData()
+        if isFirstSync then
+            print('🚀 Initial sync: ' .. #current .. ' instances')
+            sendPing()
+            local totalBatches = math.ceil(#current / BATCH_SIZE)
+            for i = 0, totalBatches - 1 do
+                local startIdx = i * BATCH_SIZE + 1
+                local endIdx = math.min((i + 1) * BATCH_SIZE, #current)
+                sendBatch(
+                    { table.unpack(current, startIdx, endIdx) },
+                    i,
+                    totalBatches
+                )
+                task.wait(0.05)
+            end
+            isFirstSync = false
+        else
+            local changes = detectChanges(current)
+            if #changes.added + #changes.modified + #changes.removed > 0 then
+                print(
+                    '📊 Incremental update: '
+                        .. #changes.added
+                        .. ' added, '
+                        .. #changes.modified
+                        .. ' modified, '
+                        .. #changes.removed
+                        .. ' removed'
+                )
+                sendIncrementalUpdate(
+                    changes.added,
+                    changes.modified,
+                    changes.removed
+                )
+            end
+        end
+        previousInstances = {}
+        for _, inst in ipairs(current) do
+            previousInstances[inst.path] = inst
+        end
+    end)
+    if not ok then
+        warn('❌ sendUpdates error: ' .. tostring(err))
+    end
+    isSending = false
+end
+
+local function start()
+    print('🎮 Roblox Game Explorer HTTP Incremental Mode')
+    sendPing()
+    spawn(function()
+        while true do
+            if tick() - lastUpdate >= UPDATE_INTERVAL then
+                sendUpdates()
+                lastUpdate = tick()
+            end
+            task.wait(0.05)
+        end
+    end)
+    spawn(function()
+        while true do
+            task.wait(30)
+            if previousInstances then
+                sendPing()
+            end
+        end
+    end)
+end
+
+start()
+print(
+    '✅ Incremental HTTP Explorer Started!\n📡 Server: '
+        .. SERVER_URL
+        .. '\n⏱️ Interval: '
+        .. UPDATE_INTERVAL
+        .. 's\n📦 Batch: '
+        .. BATCH_SIZE
+)
+
+return {
+    sendPing = sendPing,
+    sendIncrementalUpdate = sendIncrementalUpdate,
+    collectCurrentGameData = collectCurrentGameData,
+    detectChanges = detectChanges,
+}

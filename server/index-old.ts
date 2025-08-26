@@ -1,0 +1,135 @@
+import express, { type Request, Response, NextFunction } from "express";
+import { registerRoutes } from "./routes";
+import { setupVite, serveStatic, log } from "./vite";
+
+// Roblox compression decompression function
+function decompressRobloxData(compressed: string): string {
+  // Decompression dictionary matching the Lua client
+  const decompressionDict: Record<string, string> = {
+    [String.fromCharCode(128 + 1)]: '{"',
+    [String.fromCharCode(128 + 2)]: '"}',
+    [String.fromCharCode(128 + 3)]: '","',
+    [String.fromCharCode(128 + 4)]: '":',
+    [String.fromCharCode(128 + 5)]: '[{',
+    [String.fromCharCode(128 + 6)]: '}]',
+    [String.fromCharCode(128 + 7)]: '},{',
+    [String.fromCharCode(128 + 8)]: '"name":',
+    [String.fromCharCode(128 + 9)]: '"className":',
+    [String.fromCharCode(128 + 10)]: '"path":',
+    [String.fromCharCode(128 + 11)]: '"parent":',
+    [String.fromCharCode(128 + 12)]: '"properties":',
+    [String.fromCharCode(128 + 13)]: '"children":',
+    [String.fromCharCode(128 + 14)]: '"id":',
+    [String.fromCharCode(128 + 15)]: '"instances":',
+    [String.fromCharCode(128 + 16)]: '"batchIndex":',
+    [String.fromCharCode(128 + 17)]: '"totalBatches":'
+  };
+  
+  let decompressed = compressed;
+  
+  // Replace compressed tokens
+  for (const [token, original] of Object.entries(decompressionDict)) {
+    decompressed = decompressed.split(token).join(original);
+  }
+  
+  // Handle run-length encoding decompression
+  decompressed = decompressed.replace(/\xff(.)(\d+)/g, (match, char, count) => {
+    return char.repeat(parseInt(count));
+  });
+  
+  return decompressed;
+}
+
+const app = express();
+
+// Custom middleware to handle compressed data from Roblox clients
+app.use('/api', (req, res, next) => {
+  if (req.headers['x-compression'] === 'RobloxDictionary') {
+    let body = '';
+    req.setEncoding('utf8');
+    req.on('data', chunk => body += chunk);
+    req.on('end', () => {
+      try {
+        // Decompress the data
+        let decompressed = body;
+        if (body.startsWith('COMPRESSED_V1:')) {
+          decompressed = decompressRobloxData(body.substring(13));
+        }
+        req.body = JSON.parse(decompressed);
+        next();
+      } catch (error) {
+        console.error('Decompression failed:', error);
+        res.status(400).json({ error: 'Invalid compressed data' });
+      }
+    });
+  } else {
+    next();
+  }
+});
+
+app.use(express.json({ limit: '50mb' })); // Increased limit for large batches
+app.use(express.urlencoded({ extended: false, limit: '50mb' })); // Increased limit for large batches
+
+app.use((req, res, next) => {
+  const start = Date.now();
+  const path = req.path;
+  let capturedJsonResponse: Record<string, any> | undefined = undefined;
+
+  const originalResJson = res.json;
+  res.json = function (bodyJson, ...args) {
+    capturedJsonResponse = bodyJson;
+    return originalResJson.apply(res, [bodyJson, ...args]);
+  };
+
+  res.on("finish", () => {
+    const duration = Date.now() - start;
+    if (path.startsWith("/api")) {
+      let logLine = `${req.method} ${path} ${res.statusCode} in ${duration}ms`;
+      if (capturedJsonResponse) {
+        logLine += ` :: ${JSON.stringify(capturedJsonResponse)}`;
+      }
+
+      if (logLine.length > 80) {
+        logLine = logLine.slice(0, 79) + "…";
+      }
+
+      log(logLine);
+    }
+  });
+
+  next();
+});
+
+(async () => {
+  const server = await registerRoutes(app);
+
+  app.use((err: any, _req: Request, res: Response, _next: NextFunction) => {
+    const status = err.status || err.statusCode || 500;
+    const message = err.message || "Internal Server Error";
+
+    res.status(status).json({ message });
+    throw err;
+  });
+
+  // importantly only setup vite in development and after
+  // setting up all the other routes so the catch-all route
+  // doesn't interfere with the other routes
+  if (app.get("env") === "development") {
+    await setupVite(app, server);
+  } else {
+    serveStatic(app);
+  }
+
+  // ALWAYS serve the app on the port specified in the environment variable PORT
+  // Other ports are firewalled. Default to 5000 if not specified.
+  // this serves both the API and the client.
+  // It is the only port that is not firewalled.
+  const port = parseInt(process.env.PORT || '5000', 10);
+  server.listen({
+    port,
+    host: "0.0.0.0",
+    reusePort: true,
+  }, () => {
+    log(`serving on port ${port}`);
+  });
+})();

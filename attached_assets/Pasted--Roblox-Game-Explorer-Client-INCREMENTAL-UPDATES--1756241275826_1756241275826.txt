@@ -1,0 +1,430 @@
+--[[ 
+    Roblox Game Explorer Client - INCREMENTAL UPDATES
+    ------------------------------------------------
+    Uses Zenith WebSocket API to send ONLY changed data
+    Optimized for 100K+ objects with minimal network usage.
+
+    Place this script in ServerScriptService.
+]]
+
+-- Dependencies
+local RunService = game:GetService('RunService')
+
+-- Configuration
+local SERVER_URL =
+    'https://9adb481e-ce2b-45da-a885-2b2417f10ef4-00-3avv3vwoxx3lh.picard.replit.dev/'
+local UPDATE_INTERVAL = 1 -- seconds
+local BATCH_SIZE = 25 -- WebSocket batch size
+
+-- State
+local ws
+local isConnected = false
+local isSending = false
+local lastUpdate = 0
+local isFirstSync = true
+local previousInstances = {}
+local previousInstanceHashes = {}
+
+--==============================================================
+-- Utilities
+--==============================================================
+local function encodeValue(v)
+    if type(v) == 'string' then
+        return '"'
+            .. v:gsub('"', '\\"')
+                :gsub('\n', '\\n')
+                :gsub('\r', '\\r')
+                :gsub('\t', '\\t')
+            .. '"'
+    elseif type(v) == 'number' or type(v) == 'boolean' then
+        return tostring(v)
+    else
+        return '"' .. tostring(v):gsub('"', '\\"') .. '"'
+    end
+end
+
+local function encodeTable(tbl)
+    local parts = {}
+    for k, v in pairs(tbl) do
+        if type(k) == 'string' or type(k) == 'number' then
+            table.insert(
+                parts,
+                encodeValue(tostring(k)) .. ':' .. encodeValue(v)
+            )
+        end
+    end
+    return '{' .. table.concat(parts, ',') .. '}'
+end
+
+local function map(tbl, fn)
+    local result = {}
+    for i, v in ipairs(tbl) do
+        result[i] = fn(v)
+    end
+    return result
+end
+
+--==============================================================
+-- Hashing and Change Detection
+--==============================================================
+local function createHash(instanceData)
+    local hashString = instanceData.name
+        .. '|'
+        .. instanceData.className
+        .. '|'
+        .. instanceData.parent
+    for k, v in pairs(instanceData.properties) do
+        if k ~= 'Name' and k ~= 'ClassName' and k ~= 'Parent' then
+            hashString = hashString .. '|' .. k .. ':' .. tostring(v)
+        end
+    end
+    local hash = 0
+    for i = 1, #hashString do
+        hash = ((hash * 31) + string.byte(hashString, i)) % 2147483647
+    end
+    return hash
+end
+
+local function instancesAreEqual(inst1, inst2)
+    if not inst1 or not inst2 then
+        return false
+    end
+    return createHash(inst1) == createHash(inst2)
+end
+
+--==============================================================
+-- Instance Data Collection
+--==============================================================
+local function createInstanceData(instance, parentPath)
+    local path = parentPath and (parentPath .. '.' .. instance.Name)
+        or 'game.' .. instance.Name
+    local properties = {
+        Name = instance.Name,
+        ClassName = instance.ClassName,
+        Parent = instance.Parent and instance.Parent.Name or 'nil',
+    }
+
+    if instance:IsA('BasePart') then
+        properties.Position = tostring(instance.Position)
+        properties.Size = tostring(instance.Size)
+        properties.Material = tostring(instance.Material)
+        properties.Color = tostring(instance.Color)
+        properties.Anchored = instance.Anchored
+        properties.CanCollide = instance.CanCollide
+        properties.Transparency = instance.Transparency
+    elseif instance:IsA('Model') then
+        properties.PrimaryPart = instance.PrimaryPart
+                and instance.PrimaryPart.Name
+            or 'nil'
+    elseif instance:IsA('Camera') then
+        properties.CameraType = tostring(instance.CameraType)
+        properties.FieldOfView = instance.FieldOfView
+    elseif instance:IsA('Terrain') then
+        properties.WaterColor = tostring(instance.WaterColor)
+        properties.WaterTransparency = instance.WaterTransparency
+    elseif instance:IsA('Script') or instance:IsA('LocalScript') then
+        properties.Enabled = instance.Enabled
+    elseif instance:IsA('Tool') then
+        properties.Enabled = instance.Enabled
+        properties.ToolTip = instance.ToolTip
+    elseif instance:IsA('Lighting') then
+        properties.Brightness = instance.Brightness
+        properties.TimeOfDay = instance.TimeOfDay
+        properties.Ambient = tostring(instance.Ambient)
+    elseif instance:IsA('Players') then
+        properties.MaxPlayers = instance.MaxPlayers
+        properties.NumPlayers = instance.NumPlayers
+    elseif instance:IsA('Workspace') then
+        properties.Gravity = instance.Gravity
+        properties.CurrentCamera = instance.CurrentCamera
+                and instance.CurrentCamera.Name
+            or 'nil'
+    end
+
+    return {
+        id = 'inst_' .. math.random(10000, 99999) .. '_' .. tick(),
+        name = instance.Name,
+        className = instance.ClassName,
+        path = path,
+        parent = instance.Parent and instance.Parent.Name or 'nil',
+        properties = properties,
+        children = {},
+    }
+end
+
+local function collectChildrenOptimized(parent, parentPath, instances)
+    for _, child in ipairs(parent:GetChildren()) do
+        local inst = createInstanceData(child, parentPath)
+        table.insert(instances, inst)
+        -- Recursively collect all children
+        collectChildrenOptimized(child, inst.path, instances)
+        -- Yield periodically
+        if #instances % 100 == 0 then
+            RunService.Heartbeat:Wait()
+        end
+    end
+end
+
+local function collectCurrentGameData()
+    local instances = {}
+    table.insert(instances, {
+        id = 'game_root',
+        name = 'game',
+        className = 'DataModel',
+        path = 'game',
+        parent = 'nil',
+        properties = {
+            Name = 'game',
+            ClassName = 'DataModel',
+            JobId = game.JobId,
+            PlaceId = game.PlaceId,
+            GameId = game.GameId,
+        },
+        children = {},
+    })
+
+    local services = {
+        'Workspace',
+        'Players',
+        'ReplicatedStorage',
+        'ServerStorage',
+        'Lighting',
+        'StarterGui',
+        'StarterPack',
+        'StarterPlayer',
+        'SoundService',
+        'TweenService',
+        'Teams',
+        'Chat',
+        'HttpService',
+        'RunService',
+        'UserInputService',
+    }
+
+    for _, name in ipairs(services) do
+        local ok, service = pcall(function()
+            return game:GetService(name)
+        end)
+        if ok and service then
+            local serviceData = createInstanceData(service, 'game')
+
+            -- Service-specific properties
+            if name == 'Workspace' then
+                serviceData.properties.Gravity = service.Gravity
+                serviceData.properties.CurrentCamera = service.CurrentCamera
+                        and service.CurrentCamera.Name
+                    or 'nil'
+            elseif name == 'Lighting' then
+                serviceData.properties.Brightness = service.Brightness
+                serviceData.properties.TimeOfDay = service.TimeOfDay
+                serviceData.properties.Ambient = tostring(service.Ambient)
+            elseif name == 'Players' then
+                serviceData.properties.MaxPlayers = service.MaxPlayers
+                serviceData.properties.NumPlayers = service.NumPlayers
+            end
+
+            table.insert(instances, serviceData)
+            collectChildrenOptimized(service, 'game.' .. name, instances)
+        end
+    end
+
+    return instances
+end
+
+--==============================================================
+-- Change Detection
+--==============================================================
+local function detectChanges(currentInstances)
+    local changes = { added = {}, modified = {}, removed = {} }
+    local currentByPath = {}
+    for _, inst in ipairs(currentInstances) do
+        currentByPath[inst.path] = inst
+    end
+    for path, currentInst in pairs(currentByPath) do
+        local previousInst = previousInstances[path]
+        if not previousInst then
+            table.insert(changes.added, currentInst)
+        elseif not instancesAreEqual(currentInst, previousInst) then
+            table.insert(changes.modified, currentInst)
+        end
+    end
+    for path, _ in pairs(previousInstances) do
+        if not currentByPath[path] then
+            table.insert(changes.removed, path)
+        end
+    end
+    return changes
+end
+
+local function serializeInstances(instances)
+    local json = {}
+    for _, inst in ipairs(instances) do
+        table.insert(
+            json,
+            '{'
+                .. '"id":'
+                .. encodeValue(inst.id)
+                .. ','
+                .. '"name":'
+                .. encodeValue(inst.name)
+                .. ','
+                .. '"className":'
+                .. encodeValue(inst.className)
+                .. ','
+                .. '"path":'
+                .. encodeValue(inst.path)
+                .. ','
+                .. '"parent":'
+                .. encodeValue(inst.parent)
+                .. ','
+                .. '"properties":'
+                .. encodeTable(inst.properties)
+                .. ','
+                .. '"children":[]}'
+        )
+    end
+    return table.concat(json, ',')
+end
+
+--==============================================================
+-- Incremental Updates
+--==============================================================
+local function sendIncrementalUpdates()
+    if not isConnected or not ws or isSending then
+        return
+    end
+    isSending = true
+
+    local ok, err = pcall(function()
+        local currentInstances = collectCurrentGameData()
+
+        if isFirstSync then
+            local totalBatches = math.ceil(#currentInstances / BATCH_SIZE)
+            local startMessage = '{"type":"gameTreeStart","data":{"totalInstances":'
+                .. #currentInstances
+                .. ',"batchSize":'
+                .. BATCH_SIZE
+                .. '}}'
+            pcall(function()
+                ws:Send(startMessage)
+            end)
+
+            for batchIndex = 0, totalBatches - 1 do
+                local startIdx = batchIndex * BATCH_SIZE + 1
+                local endIdx =
+                    math.min((batchIndex + 1) * BATCH_SIZE, #currentInstances)
+                local batchInstances = {}
+                for i = startIdx, endIdx do
+                    table.insert(batchInstances, currentInstances[i])
+                end
+                local serialized = serializeInstances(batchInstances)
+                local batchMessage = '{"type":"gameTreeBatch","data":{"batchIndex":'
+                    .. batchIndex
+                    .. ',"totalBatches":'
+                    .. totalBatches
+                    .. ',"instances":['
+                    .. serialized
+                    .. ']}}'
+                pcall(function()
+                    ws:Send(batchMessage)
+                end)
+                task.wait(0.05)
+            end
+
+            pcall(function()
+                ws:Send(
+                    '{"type":"gameTreeComplete","data":{"totalProcessed":'
+                        .. #currentInstances
+                        .. '}}'
+                )
+            end)
+            isFirstSync = false
+        else
+            local changes = detectChanges(currentInstances)
+            if #changes.added + #changes.modified + #changes.removed > 0 then
+                local addedJson = #changes.added > 0
+                        and '[' .. serializeInstances(changes.added) .. ']'
+                    or '[]'
+                local modifiedJson = #changes.modified > 0
+                        and '[' .. serializeInstances(changes.modified) .. ']'
+                    or '[]'
+                local removedJson = '['
+                    .. table.concat(map(changes.removed, encodeValue), ',')
+                    .. ']'
+                local incrementalMessage = '{"type":"incrementalUpdate","data":{"added":'
+                    .. addedJson
+                    .. ',"modified":'
+                    .. modifiedJson
+                    .. ',"removed":'
+                    .. removedJson
+                    .. ',"timestamp":'
+                    .. tick()
+                    .. '}}'
+                pcall(function()
+                    ws:Send(incrementalMessage)
+                end)
+            end
+        end
+
+        previousInstances = {}
+        for _, inst in ipairs(currentInstances) do
+            previousInstances[inst.path] = inst
+            previousInstanceHashes[inst.path] = createHash(inst)
+        end
+    end)
+
+    if not ok then
+        warn('[GameExplorer] sendIncrementalUpdates failed:', err)
+    end
+    isSending = false
+end
+
+--==============================================================
+-- WebSocket Connection
+--==============================================================
+local function connect()
+    if isSending then
+        return
+    end
+    print('[GameExplorer] Connecting...')
+    local ok, result = pcall(function()
+        return WebSocket.New(SERVER_URL)
+    end)
+    if not ok then
+        warn('[GameExplorer] Connection failed:', result)
+        task.delay(3, connect)
+        return
+    end
+
+    ws = result
+    isConnected = true
+    isFirstSync = true
+    print('[GameExplorer] Connected! Starting incremental sync...')
+
+    ws.OnMessage:Connect(function(msg)
+        print('[Server]', msg)
+    end)
+    ws.OnClose:Connect(function()
+        print('[GameExplorer] Disconnected, retrying...')
+        isConnected = false
+        ws = nil
+        isSending = false
+        isFirstSync = true
+        task.delay(3, connect)
+    end)
+
+    task.spawn(sendIncrementalUpdates)
+end
+
+--==============================================================
+-- Main Loop
+--==============================================================
+print('[GameExplorer] INCREMENTAL Client starting - sends only changes!')
+connect()
+
+RunService.Heartbeat:Connect(function()
+    if tick() - lastUpdate >= UPDATE_INTERVAL then
+        task.spawn(sendIncrementalUpdates)
+        lastUpdate = tick()
+    end
+end)
